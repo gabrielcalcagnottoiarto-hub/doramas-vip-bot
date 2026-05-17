@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import asyncio
+import random
 import time
 import urllib.parse
 import httpx
@@ -1081,6 +1082,31 @@ async def config_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Parametros invalidos. Use /config sem argumentos para ver o uso.")
 
+async def random_content_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Envia um conteudo aleatorio do catalogo ao usuario VIP."""
+    user_data, _, _ = ensure_user(update.effective_user.id)
+    if not is_vip_active(user_data):
+        await update.message.reply_text(
+            "Voce precisa ser VIP para usar este comando.\nUse /start para ver os planos.",
+        )
+        return
+    db = load_json(VIDEO_DB)
+    available = {k: v for k, v in db.items() if v and v.strip() not in ("", "COLOQUE_O_FILE_ID_AQUI")}
+    if not available:
+        await update.message.reply_text("Nenhum conteudo disponivel no momento.")
+        return
+    key = random.choice(list(available.keys()))
+    url = available[key]
+    parts = key.split("_")
+    d_id, ep = parts[0], parts[1] if len(parts) > 1 else "?"
+    title = DORAMAS_CATALOG.get(d_id, {}).get("title", d_id)
+    keyboard = [[InlineKeyboardButton(f"Assistir {title} Ep {ep}", url=url)]]
+    await update.message.reply_text(
+        f"<b>{title}</b> - Episodio {ep}",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode=ParseMode.HTML,
+    )
+
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) == str(ADMIN_ID):
         file_id = update.message.video.file_id
@@ -1220,6 +1246,7 @@ def build_app():
     app.add_handler(CommandHandler("setreferrals",  setreferrals_command))
     app.add_handler(CommandHandler("broadcast",     broadcast_command))
     app.add_handler(CommandHandler("listpayments",  listpayments_command))
+    app.add_handler(CommandHandler("random",        random_content_command))
     app.add_handler(CommandHandler("admin",         admin_panel))
     app.add_handler(CallbackQueryHandler(admin_callback_handler, pattern=r"^admin_"))
     app.add_handler(CallbackQueryHandler(referral_handler,       pattern=r"^referral$"))

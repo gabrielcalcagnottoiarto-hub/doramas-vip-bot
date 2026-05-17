@@ -1,13 +1,13 @@
-
 import os
 import json
 import logging
 import asyncio
 import time
+import urllib.parse
 import httpx
 from datetime import datetime, timedelta
 from pathlib import Path
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -63,6 +63,7 @@ WELCOME_IMAGE_URL = (
     "https://img.freepik.com/vetores-premium/"
     "ilustracao-de-estilo-anime-de-um-casal-em-um-encontro-romantico_23-2148817840.jpg"
 )
+WELCOME_VIDEO  = BASE_DIR / "welcome_video.mp4"
 
 # ─────────────────────────────────────────────
 # CATÁLOGO
@@ -312,7 +313,6 @@ def gerar_referencia_ton(user_id: str, plano_key: str) -> str:
 
 def tonkeeper_url(address: str, nanotons: int, memo: str) -> str:
     """Gera URL do Tonkeeper com memo para rastreamento."""
-    import urllib.parse
     memo_enc = urllib.parse.quote(memo)
     return f"https://app.tonkeeper.com/transfer/{address}?amount={nanotons}&text={memo_enc}"
 
@@ -481,14 +481,47 @@ async def send_or_edit_photo(update, context, caption: str, keyboard: list) -> N
             return
         except Exception:
             pass
+
+    chat_id = update.effective_chat.id
+
+    # Try cached welcome video first
+    cached_vid = load_json(CONFIG_FILE).get("welcome_video_id")
+    if cached_vid:
+        try:
+            await context.bot.send_video(
+                chat_id=chat_id, video=cached_vid,
+                caption=caption, reply_markup=reply_markup,
+                parse_mode=ParseMode.HTML, read_timeout=60, write_timeout=60,
+            )
+            return
+        except Exception:
+            pass
+
+    # Try sending local welcome video file
+    if WELCOME_VIDEO.exists():
+        try:
+            with WELCOME_VIDEO.open("rb") as v:
+                sent = await context.bot.send_video(
+                    chat_id=chat_id, video=v,
+                    caption=caption, reply_markup=reply_markup,
+                    parse_mode=ParseMode.HTML, read_timeout=120, write_timeout=120,
+                )
+                cfg = load_json(CONFIG_FILE)
+                cfg["welcome_video_id"] = sent.video.file_id
+                save_json(CONFIG_FILE, cfg)
+            return
+        except Exception:
+            pass
+
+    # Fallback to welcome image
     try:
         await context.bot.send_photo(
-            chat_id=update.effective_chat.id, photo=WELCOME_IMAGE_URL,
+            chat_id=chat_id, photo=WELCOME_IMAGE_URL,
             caption=caption, reply_markup=reply_markup, parse_mode=ParseMode.HTML,
         )
     except Exception:
         await context.bot.send_message(
-            chat_id=update.effective_chat.id, text=caption,
+            chat_id=chat_id, text=caption,
             reply_markup=reply_markup, parse_mode=ParseMode.HTML,
         )
 
@@ -946,11 +979,116 @@ async def listpayments_command(update: Update, context: ContextTypes.DEFAULT_TYP
         lines.append(f"• [{tipo}] <code>{key}</code>\n  👤 {p['user_id']} | {p['plano']} | {created}")
     await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
+async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin: /upload <dorama_id> <episodio> <url_ou_file_id>"""
+    if str(update.effective_user.id) != str(ADMIN_ID):
+        return
+    if len(context.args) < 3:
+        await update.message.reply_text(
+            "Uso: /upload <dorama_id> <episodio> <url>\n"
+            "Ex: /upload d1 3 https://site.com/video.mp4\n\n"
+            "Doramas disponíveis:\n" +
+            "\n".join(f"  <code>{k}</code> — {v['title']}" for k, v in DORAMAS_CATALOG.items()),
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    d_id, ep, url = context.args[0], context.args[1], context.args[2]
+    if d_id not in DORAMAS_CATALOG:
+        await update.message.reply_text(f"Dorama <code>{d_id}</code> nao encontrado.", parse_mode=ParseMode.HTML)
+        return
+    key = f"{d_id}_{ep}"
+    db = load_json(VIDEO_DB)
+    db[key] = url
+    save_json(VIDEO_DB, db)
+    title = DORAMAS_CATALOG[d_id]["title"]
+    await update.message.reply_text(
+        f"Link salvo!\n\n<b>{title}</b> — Ep {ep}\n<code>{key}</code> -> {url}",
+        parse_mode=ParseMode.HTML,
+    )
+
+async def config_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin: /config <chave> <valor>
+    Chaves: pix, ton, ad, vip, broadcast
+    """
+    if str(update.effective_user.id) != str(ADMIN_ID):
+        return
+    if not context.args:
+        await update.message.reply_text(
+            "Uso:\n"
+            "  /config pix <chave_pix>\n"
+            "  /config ton <endereco_ton>\n"
+            "  /config ad <texto_do_anuncio>\n"
+            "  /config vip <user_id> <dias>\n"
+            "  /config broadcast <mensagem>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    sub = context.args[0].lower()
+    rest = context.args[1:]
+
+    if sub == "pix" and rest:
+        cfg = load_json(CONFIG_FILE)
+        cfg["pix_key"] = rest[0]
+        save_json(CONFIG_FILE, cfg)
+        await update.message.reply_text(f"Chave PIX atualizada: <code>{rest[0]}</code>", parse_mode=ParseMode.HTML)
+
+    elif sub == "ton" and rest:
+        cfg = load_json(CONFIG_FILE)
+        cfg["ton_address"] = rest[0]
+        save_json(CONFIG_FILE, cfg)
+        await update.message.reply_text(f"Endereco TON atualizado: <code>{rest[0]}</code>", parse_mode=ParseMode.HTML)
+
+    elif sub == "ad":
+        ad_text = " ".join(rest) if rest else ""
+        cfg = load_json(CONFIG_FILE)
+        if ad_text:
+            cfg["ad_text"] = ad_text
+            save_json(CONFIG_FILE, cfg)
+            await update.message.reply_text(f"Anuncio configurado: {ad_text}")
+        else:
+            cfg.pop("ad_text", None)
+            save_json(CONFIG_FILE, cfg)
+            await update.message.reply_text("Anuncio removido.")
+
+    elif sub == "vip" and len(rest) >= 1:
+        uid = rest[0]
+        dias = int(rest[1]) if len(rest) > 1 else 30
+        activate_vip(uid, dias)
+        msg = "VIP Vitalicio" if dias >= 36000 else f"VIP por {dias} dias"
+        await update.message.reply_text(f"{msg} para <code>{uid}</code>!", parse_mode=ParseMode.HTML)
+
+    elif sub == "broadcast" and rest:
+        msg_text = " ".join(rest)
+        users = load_json(DATA_FILE)
+        sent = failed = 0
+        for uid in users:
+            try:
+                await context.bot.send_message(
+                    chat_id=int(uid),
+                    text=f"<b>Mensagem da equipe DORAMAS VIP:</b>\n\n{msg_text}",
+                    parse_mode=ParseMode.HTML,
+                )
+                sent += 1
+                await asyncio.sleep(0.05)
+            except Exception:
+                failed += 1
+        await update.message.reply_text(
+            f"Broadcast!\nEnviado: <b>{sent}</b> | Falhou: <b>{failed}</b>",
+            parse_mode=ParseMode.HTML,
+        )
+
+    else:
+        await update.message.reply_text("Parametros invalidos. Use /config sem argumentos para ver o uso.")
+
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) == str(ADMIN_ID):
+        file_id = update.message.video.file_id
         await update.message.reply_text(
-            f"📁 <b>File ID:</b>\n<code>{update.message.video.file_id}</code>",
-            parse_mode=ParseMode.HTML)
+            f"<b>File ID:</b>\n<code>{file_id}</code>\n\n"
+            f"Use: /addlink <chave> <code>{file_id}</code>",
+            parse_mode=ParseMode.HTML,
+        )
 
 # ─────────────────────────────────────────────
 # PAINEL ADMIN
@@ -1060,11 +1198,24 @@ async def admin_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
 # ─────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────
+async def post_init(app) -> None:
+    """Configura os comandos do menu do Telegram."""
+    try:
+        await app.bot.set_my_commands([
+            BotCommand("start", "Menu principal"),
+            BotCommand("status", "Ver meu status VIP"),
+        ])
+    except Exception as e:
+        logger.warning(f"Nao foi possivel definir comandos do bot: {e}")
+
 def build_app():
     app = ApplicationBuilder().token(TOKEN).build()
+    app.post_init = post_init
     app.add_handler(CommandHandler("start",         start))
     app.add_handler(CommandHandler("addlink",       addlink_command))
     app.add_handler(CommandHandler("addvip",        addvip_command))
+    app.add_handler(CommandHandler("upload",        upload_command))
+    app.add_handler(CommandHandler("config",        config_command))
     app.add_handler(CommandHandler("listusers",     listusers_command))
     app.add_handler(CommandHandler("setreferrals",  setreferrals_command))
     app.add_handler(CommandHandler("broadcast",     broadcast_command))

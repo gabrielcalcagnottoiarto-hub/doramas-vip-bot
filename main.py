@@ -3,7 +3,9 @@ import sqlite3
 import os
 import asyncio
 import random
+import threading
 import requests
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
@@ -650,6 +652,26 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Use: responda ao vídeo com\n/upload Titulo | Categoria | Preco | sim/nao"
         )
 
+# ==========================================
+# 🌐 HEALTH CHECK SERVER (para Render/Railway)
+# ==========================================
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b'Bot VIP da Pelada - Online!')
+
+    def log_message(self, format, *args):
+        pass  # Silenciar logs do health check
+
+def start_health_server():
+    port = int(os.environ.get('PORT', 10000))
+    server = HTTPServer(('0.0.0.0', port), HealthHandler)
+    logger.info(f"🌐 Health check server rodando na porta {port}")
+    server.serve_forever()
+
 def main():
     init_db()
 
@@ -657,6 +679,10 @@ def main():
     if saved_pix:
         global PIX_KEY
         PIX_KEY = saved_pix[0]
+
+    # Iniciar health check server em thread separada (necessario para Render/Railway)
+    health_thread = threading.Thread(target=start_health_server, daemon=True)
+    health_thread.start()
 
     app = Application.builder().token(TOKEN).connect_timeout(60).read_timeout(60).write_timeout(60).build()
     app.add_handler(CommandHandler("start", start))

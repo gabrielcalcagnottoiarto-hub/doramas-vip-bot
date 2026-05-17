@@ -4,6 +4,7 @@ config.json
 payments.json
 video_links.json
 *.db
+users.db
 
 # Logs
 *.log
@@ -28,5 +29,5 @@ venv/
 .DS_Store
 Thumbs.db
 
-# Videos
-*.mp4
+# Videos (welcome_video.mp4 is tracked)
+# *.mp4

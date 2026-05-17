@@ -216,55 +216,110 @@ async def send_random_content(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(content)
 
 # ==========================================
-# 🔍 BUSCA DE VÍDEOS
+# 🔍 BUSCA DE VÍDEOS — PEXELS API (Gratuita)
 # ==========================================
 
-SEARCH_URL = "https://exemplo.com/vazados"
+PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY", "")
 
 async def search_videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not is_user_vip(uid):
         await update.message.reply_text("❌ Você precisa ser VIP para usar este comando.\nUse /start para ver os planos.")
         return
+
+    api_key = db_query('SELECT value FROM config WHERE key = ?', ('pexels_api_key',), fetchone=True)
+    key = api_key[0] if api_key else PEXELS_API_KEY
+    if not key:
+        await update.message.reply_text("⚠️ API Pexels não configurada.\nAdmin: /config pexels <sua_api_key>\nObtenha grátis em: https://www.pexels.com/api/")
+        return
+
+    query = " ".join(context.args) if context.args else "nature"
     try:
-        response = requests.get(SEARCH_URL, timeout=10)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        videos = soup.find_all('div', class_='video-item')
+        headers = {"Authorization": key}
+        response = requests.get(
+            f"https://api.pexels.com/v1/videos/search?query={query}&per_page=5&locale=pt-BR",
+            headers=headers, timeout=10
+        )
+        data = response.json()
+        videos = data.get('videos', [])
         if not videos:
-            await update.message.reply_text("📂 Nenhum vídeo encontrado no momento.")
+            await update.message.reply_text(f"📂 Nenhum vídeo encontrado para: {query}")
             return
-        for video in videos:
-            video_url = video.find('a')['href']
-            video_title = video.find('h3').text
-            await update.message.reply_text(f"🎬 Novo vídeo: {video_title}\n{video_url}")
+        for v in videos:
+            video_url = v.get('url', '')
+            user_name = v.get('user', {}).get('name', 'Desconhecido')
+            duration = v.get('duration', 0)
+            hd_link = ''
+            for vf in v.get('video_files', []):
+                if vf.get('quality') == 'hd':
+                    hd_link = vf.get('link', '')
+                    break
+            if not hd_link and v.get('video_files'):
+                hd_link = v['video_files'][0].get('link', '')
+            await update.message.reply_text(
+                f"🎬 *{user_name}* ({duration}s)\n"
+                f"🔗 Pexels: {video_url}\n"
+                f"📥 Download: {hd_link}",
+                parse_mode='Markdown'
+            )
     except Exception as e:
-        logger.error(f"Erro ao buscar vídeos: {e}")
+        logger.error(f"Erro ao buscar vídeos Pexels: {e}")
         await update.message.reply_text("❌ Erro ao buscar vídeos. Tente novamente mais tarde.")
 
 # ==========================================
-# 🌐 BUSCA DE VÍDEOS VIA API JSON
+# 🌐 BUSCA DE FILMES/SÉRIES — TMDB API (Gratuita)
 # ==========================================
 
-API_SEARCH_URL = "https://exemplo.com/videos"
+TMDB_API_KEY = os.environ.get("TMDB_API_KEY", "")
 
 async def search_api(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not is_user_vip(uid):
         await update.message.reply_text("❌ Você precisa ser VIP para usar este comando.\nUse /start para ver os planos.")
         return
+
+    api_key = db_query('SELECT value FROM config WHERE key = ?', ('tmdb_api_key',), fetchone=True)
+    key = api_key[0] if api_key else TMDB_API_KEY
+    if not key:
+        await update.message.reply_text("⚠️ API TMDB não configurada.\nAdmin: /config tmdb <sua_api_key>\nObtenha grátis em: https://www.themoviedb.org/settings/api")
+        return
+
+    query = " ".join(context.args) if context.args else ""
+    if not query:
+        await update.message.reply_text("Uso: /search_api <nome do filme ou série>\nExemplo: /search_api Breaking Bad")
+        return
+
     try:
-        response = requests.get(API_SEARCH_URL, timeout=10)
-        videos = response.json()
-        if not videos:
-            await update.message.reply_text("📂 Nenhum vídeo encontrado no momento.")
+        response = requests.get(
+            f"https://api.themoviedb.org/3/search/multi?api_key={key}&query={query}&language=pt-BR&page=1",
+            timeout=10
+        )
+        data = response.json()
+        results = data.get('results', [])[:5]
+        if not results:
+            await update.message.reply_text(f"📂 Nenhum resultado para: {query}")
             return
-        for video in videos:
-            video_url = video.get('url', '')
-            video_title = video.get('title', 'Sem título')
-            await update.message.reply_text(f"🎬 Novo vídeo: {video_title}\n{video_url}")
+        for item in results:
+            media_type = item.get('media_type', 'movie')
+            title = item.get('title') or item.get('name', 'Sem título')
+            overview = item.get('overview', 'Sem descrição')[:200]
+            rating = item.get('vote_average', 0)
+            year = (item.get('release_date') or item.get('first_air_date') or '')[:4]
+            poster = item.get('poster_path', '')
+            poster_url = f"https://image.tmdb.org/t/p/w500{poster}" if poster else ''
+            tipo = "🎬 Filme" if media_type == 'movie' else "📺 Série"
+            tmdb_url = f"https://www.themoviedb.org/{media_type}/{item.get('id')}"
+
+            msg = f"{tipo}: *{title}*"
+            if year:
+                msg += f" ({year})"
+            msg += f"\n⭐ {rating}/10\n\n{overview}\n\n🔗 {tmdb_url}"
+            if poster_url:
+                msg += f"\n🖼 {poster_url}"
+            await update.message.reply_text(msg, parse_mode='Markdown')
     except Exception as e:
-        logger.error(f"Erro ao buscar vídeos via API: {e}")
-        await update.message.reply_text("❌ Erro ao buscar vídeos. Tente novamente mais tarde.")
+        logger.error(f"Erro ao buscar na TMDB: {e}")
+        await update.message.reply_text("❌ Erro ao buscar filmes. Tente novamente mais tarde.")
 
 # ==========================================
 # 🛠️ COMANDOS ADMIN
@@ -323,7 +378,9 @@ async def config_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "  /config pix <chave_pix>\n"
             "  /config vip <user_id> [dias]\n"
             "  /config ad <texto_do_anuncio>\n"
-            "  /config broadcast <mensagem>",
+            "  /config broadcast <mensagem>\n"
+            "  /config pexels <api_key>\n"
+            "  /config tmdb <api_key>",
             parse_mode='Markdown'
         )
         return
@@ -361,6 +418,14 @@ async def config_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             db_query('DELETE FROM config WHERE key = ?', ('ad_text',))
             await update.message.reply_text("✅ Anúncio removido.")
+
+    elif sub == "pexels" and rest:
+        db_query('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)', ('pexels_api_key', rest[0]))
+        await update.message.reply_text(f"✅ Pexels API Key configurada!")
+
+    elif sub == "tmdb" and rest:
+        db_query('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)', ('tmdb_api_key', rest[0]))
+        await update.message.reply_text(f"✅ TMDB API Key configurada!")
 
     elif sub == "broadcast" and rest:
         msg_text = " ".join(rest)

@@ -233,7 +233,7 @@ async def search_videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ API Pexels não configurada.\nAdmin: /config pexels <sua_api_key>\nObtenha grátis em: https://www.pexels.com/api/")
         return
 
-    query = " ".join(context.args) if context.args else "nature"
+    query = " ".join(context.args) if context.args else "sexy"
     try:
         headers = {"Authorization": key}
         response = requests.get(
@@ -286,7 +286,7 @@ async def search_api(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     query = " ".join(context.args) if context.args else ""
     if not query:
-        await update.message.reply_text("Uso: /search_api <nome do filme ou série>\nExemplo: /search_api Breaking Bad")
+        await update.message.reply_text("Uso: /search_api <nome do filme ou série>\nExemplo: /search_api filme")
         return
 
     try:
@@ -487,7 +487,7 @@ def main():
     app.add_handler(CommandHandler("listusers", listusers_command))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.VIDEO, handle_video))
-    logger.info("🚀 Bot iniciado com todas as melhorias!")
+    logger.info("🚀 Bot VIP da Pelada iniciado com todas as melhorias!")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':

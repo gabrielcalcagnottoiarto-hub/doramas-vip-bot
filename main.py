@@ -242,6 +242,31 @@ async def search_videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Erro ao buscar vídeos. Tente novamente mais tarde.")
 
 # ==========================================
+# 🌐 BUSCA DE VÍDEOS VIA API JSON
+# ==========================================
+
+API_SEARCH_URL = "https://exemplo.com/videos"
+
+async def search_api(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if not is_user_vip(uid):
+        await update.message.reply_text("❌ Você precisa ser VIP para usar este comando.\nUse /start para ver os planos.")
+        return
+    try:
+        response = requests.get(API_SEARCH_URL, timeout=10)
+        videos = response.json()
+        if not videos:
+            await update.message.reply_text("📂 Nenhum vídeo encontrado no momento.")
+            return
+        for video in videos:
+            video_url = video.get('url', '')
+            video_title = video.get('title', 'Sem título')
+            await update.message.reply_text(f"🎬 Novo vídeo: {video_title}\n{video_url}")
+    except Exception as e:
+        logger.error(f"Erro ao buscar vídeos via API: {e}")
+        await update.message.reply_text("❌ Erro ao buscar vídeos. Tente novamente mais tarde.")
+
+# ==========================================
 # 🛠️ COMANDOS ADMIN
 # ==========================================
 
@@ -391,6 +416,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("send_content", send_random_content))
     app.add_handler(CommandHandler("search_videos", search_videos))
+    app.add_handler(CommandHandler("search_api", search_api))
     app.add_handler(CommandHandler("upload", upload_command))
     app.add_handler(CommandHandler("config", config_command))
     app.add_handler(CommandHandler("listusers", listusers_command))

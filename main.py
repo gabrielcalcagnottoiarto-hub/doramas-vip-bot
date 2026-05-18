@@ -4,6 +4,9 @@ import os
 import asyncio
 import random
 import threading
+import subprocess
+import shutil
+import tempfile
 import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from bs4 import BeautifulSoup
@@ -87,6 +90,127 @@ def is_user_vip(user_id):
             expire_date = datetime.strptime(expires, '%Y-%m-%d %H:%M:%S')
             if expire_date > datetime.now(): return True
         except: pass
+    return False
+
+# ==========================================
+# 🎬 COMPRESSAO DE VIDEO (ffmpeg)
+# ==========================================
+
+VIDEO_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'videos')
+VIDEO_DIR_HD = os.path.join(VIDEO_DIR, 'hd')
+VIDEO_DIR_SD = os.path.join(VIDEO_DIR, 'sd')
+for _d in [VIDEO_DIR, VIDEO_DIR_HD, VIDEO_DIR_SD]:
+    os.makedirs(_d, exist_ok=True)
+
+def compress_video(input_path, output_path, quality='low'):
+    """Comprime video usando ffmpeg. quality: 'low' (SD 480p) ou 'medium' (HD 720p)."""
+    try:
+        if quality == 'low':
+            cmd = [
+                'ffmpeg', '-i', input_path,
+                '-c:v', 'libx264', '-preset', 'fast',
+                '-crf', '32', '-vf', 'scale=-2:480',
+                '-c:a', 'aac', '-b:a', '64k',
+                '-movflags', '+faststart',
+                '-y', output_path
+            ]
+        else:
+            cmd = [
+                'ffmpeg', '-i', input_path,
+                '-c:v', 'libx264', '-preset', 'slow',
+                '-crf', '23', '-vf', 'scale=-2:720',
+                '-c:a', 'aac', '-b:a', '128k',
+                '-movflags', '+faststart',
+                '-y', output_path
+            ]
+        result = subprocess.run(cmd, capture_output=True, timeout=300)
+        if result.returncode == 0 and os.path.exists(output_path):
+            return True
+        logger.error(f"ffmpeg erro: {result.stderr.decode()[:200]}")
+        return False
+    except subprocess.TimeoutExpired:
+        logger.error("ffmpeg timeout (5 min)")
+        return False
+    except Exception as e:
+        logger.error(f"Erro na compressao: {e}")
+        return False
+
+async def download_video_from_url(url, dest_path):
+    """Baixa video de uma URL para um arquivo local."""
+    try:
+        r = await asyncio.to_thread(requests.get, url, stream=True, timeout=120)
+        if r.status_code == 200:
+            with open(dest_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            return True
+    except Exception as e:
+        logger.error(f"Erro ao baixar video: {e}")
+    return False
+
+async def send_video_compressed(bot, chat_id, vid_id, title, description, file_id, file_id_low, url, url_low, is_vip_user):
+    """Envia video comprimido ao usuario. Tenta file_id primeiro, depois baixa e comprime URL."""
+    ad = get_ad_text()
+
+    if is_vip_user:
+        # VIP: file_id HD > download URL HD (comprimir para 720p)
+        if file_id:
+            try:
+                await bot.send_video(chat_id=chat_id, video=file_id, caption=f"*{title}* (HD)\n\n{description}", parse_mode='Markdown')
+                return True
+            except Exception:
+                pass
+        if url:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                raw = os.path.join(tmpdir, 'raw.mp4')
+                out = os.path.join(tmpdir, 'hd.mp4')
+                if await download_video_from_url(url, raw):
+                    compressed = await asyncio.to_thread(compress_video, raw, out, 'medium')
+                    send_path = out if compressed else raw
+                    try:
+                        with open(send_path, 'rb') as vf:
+                            sent = await bot.send_video(chat_id=chat_id, video=vf, caption=f"*{title}* (HD)\n\n{description}", parse_mode='Markdown')
+                            if sent.video:
+                                db_query('UPDATE videos SET file_id = ? WHERE id = ?', (sent.video.file_id, vid_id))
+                        return True
+                    except Exception as e:
+                        logger.error(f"Erro ao enviar video comprimido: {e}")
+            await bot.send_message(chat_id=chat_id, text=f"*{title}* (HD)\n\n{description}\n\nDownload: {url}", parse_mode='Markdown')
+            return True
+    else:
+        # FREE: file_id_low > file_id > download URL (comprimir para 480p)
+        caption_free = f"*{title}* (SD)\n\n{description}\n\n{ad}"
+        if file_id_low:
+            try:
+                await bot.send_video(chat_id=chat_id, video=file_id_low, caption=caption_free, parse_mode='Markdown')
+                return True
+            except Exception:
+                pass
+        if file_id:
+            try:
+                await bot.send_video(chat_id=chat_id, video=file_id, caption=caption_free, parse_mode='Markdown')
+                return True
+            except Exception:
+                pass
+        video_url = url_low or url
+        if video_url:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                raw = os.path.join(tmpdir, 'raw.mp4')
+                out = os.path.join(tmpdir, 'sd.mp4')
+                if await download_video_from_url(video_url, raw):
+                    compressed = await asyncio.to_thread(compress_video, raw, out, 'low')
+                    send_path = out if compressed else raw
+                    try:
+                        with open(send_path, 'rb') as vf:
+                            sent = await bot.send_video(chat_id=chat_id, video=vf, caption=caption_free, parse_mode='Markdown')
+                            if sent.video:
+                                col = 'file_id_low' if compressed else 'file_id'
+                                db_query(f'UPDATE videos SET {col} = ? WHERE id = ?', (sent.video.file_id, vid_id))
+                        return True
+                    except Exception as e:
+                        logger.error(f"Erro ao enviar video comprimido: {e}")
+            await bot.send_message(chat_id=chat_id, text=f"*{title}* (SD)\n\n{description}\n\nDownload: {video_url}\n\n{ad}", parse_mode='Markdown')
+            return True
     return False
 
 def populate_default_catalog():
@@ -225,39 +349,24 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith('viewvip_'):
         vid_id = data[8:]
-        v = db_query('SELECT title, description, file_id, url FROM videos WHERE id = ?', (vid_id,), fetchone=True)
+        v = db_query('SELECT id, title, description, file_id, file_id_low, url, url_low FROM videos WHERE id = ?', (vid_id,), fetchone=True)
         if not is_user_vip(uid):
             await query.edit_message_caption("❌ *CONTEÚDO VIP BLOQUEADO*\n\nAssine VIP para HD sem propagandas! 💎", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💎 VIRAR VIP AGORA", callback_data='menu_vip')], [InlineKeyboardButton("🔙 VOLTAR", callback_data='menu_cats_vip')]]), parse_mode='Markdown')
             return
-        if v[2]:
-            try:
-                await context.bot.send_video(chat_id=uid, video=v[2], caption=f"💎 *{v[0]}* (HD)\n\n{v[1]}", parse_mode='Markdown')
-            except Exception:
-                await context.bot.send_message(chat_id=uid, text="❌ Erro ao enviar vídeo.")
-        elif v[3]:
-            await context.bot.send_message(chat_id=uid, text=f"💎 *{v[0]}* (HD)\n\n{v[1]}\n\n📥 Download HD: {v[3]}", parse_mode='Markdown')
-        else:
-            await context.bot.send_message(chat_id=uid, text="❌ Conteúdo indisponível.")
+        if v:
+            sent = await send_video_compressed(context.bot, uid, v[0], v[1], v[2], v[3], v[4], v[5], v[6], True)
+            if not sent:
+                await context.bot.send_message(chat_id=uid, text="❌ Conteúdo indisponível.")
 
     elif data.startswith('viewfree_'):
         vid_id = data[9:]
-        v = db_query('SELECT title, description, file_id, file_id_low, url, url_low FROM videos WHERE id = ?', (vid_id,), fetchone=True)
+        v = db_query('SELECT id, title, description, file_id, file_id_low, url, url_low FROM videos WHERE id = ?', (vid_id,), fetchone=True)
         ad = get_ad_text()
         await context.bot.send_message(chat_id=uid, text=f"📢 *PROPAGANDA:*\n\n{ad}\n\n💎 Assine VIP para remover propagandas!", parse_mode='Markdown')
-        if v[3]:
-            try:
-                await context.bot.send_video(chat_id=uid, video=v[3], caption=f"🆓 *{v[0]}* (Resolução Baixa)\n\n{v[1]}\n\n📢 {ad}", parse_mode='Markdown')
-            except Exception:
-                await context.bot.send_message(chat_id=uid, text="❌ Erro ao enviar vídeo.")
-        elif v[2]:
-            try:
-                await context.bot.send_video(chat_id=uid, video=v[2], caption=f"🆓 *{v[0]}* (Resolução Baixa)\n\n{v[1]}\n\n📢 {ad}", parse_mode='Markdown')
-            except Exception:
-                await context.bot.send_message(chat_id=uid, text="❌ Erro ao enviar vídeo.")
-        elif v[5]:
-            await context.bot.send_message(chat_id=uid, text=f"🆓 *{v[0]}* (Resolução Baixa)\n\n{v[1]}\n\n📥 Download: {v[5]}\n\n📢 {ad}", parse_mode='Markdown')
-        elif v[4]:
-            await context.bot.send_message(chat_id=uid, text=f"🆓 *{v[0]}* (Resolução Baixa)\n\n{v[1]}\n\n📥 Download: {v[4]}\n\n📢 {ad}", parse_mode='Markdown')
+        if v:
+            sent = await send_video_compressed(context.bot, uid, v[0], v[1], v[2], v[3], v[4], v[5], v[6], False)
+            if not sent:
+                await context.bot.send_message(chat_id=uid, text="❌ Conteúdo indisponível.")
         else:
             await context.bot.send_message(chat_id=uid, text="❌ Conteúdo indisponível.")
 
@@ -305,38 +414,19 @@ async def send_random_content(update: Update, context: ContextTypes.DEFAULT_TYPE
     vip = is_user_vip(uid)
 
     if vip:
-        vids = db_query('SELECT id, title, description, file_id, url FROM videos ORDER BY RANDOM() LIMIT 1', fetchone=True)
-        if vids:
-            if vids[3]:
-                try:
-                    await context.bot.send_video(chat_id=uid, video=vids[3], caption=f"💎 *{vids[1]}* (HD)\n\n{vids[2]}", parse_mode='Markdown')
-                    return
-                except Exception:
-                    pass
-            if vids[4]:
-                await update.message.reply_text(f"💎 *{vids[1]}* (HD)\n\n{vids[2]}\n\n📥 Download HD: {vids[4]}", parse_mode='Markdown')
+        v = db_query('SELECT id, title, description, file_id, file_id_low, url, url_low FROM videos ORDER BY RANDOM() LIMIT 1', fetchone=True)
+        if v:
+            sent = await send_video_compressed(context.bot, uid, v[0], v[1], v[2], v[3], v[4], v[5], v[6], True)
+            if sent:
                 return
         await update.message.reply_text("💎 Catálogo VIP vazio. Admin: use /add_url ou /upload para adicionar conteúdo.")
     else:
-        vids = db_query('SELECT id, title, description, file_id_low, file_id, url_low, url FROM videos WHERE is_vip_content = 0 ORDER BY RANDOM() LIMIT 1', fetchone=True)
+        v = db_query('SELECT id, title, description, file_id, file_id_low, url, url_low FROM videos WHERE is_vip_content = 0 ORDER BY RANDOM() LIMIT 1', fetchone=True)
         ad = get_ad_text()
-        if vids:
+        if v:
             await update.message.reply_text(f"📢 *PROPAGANDA:* {ad}", parse_mode='Markdown')
-            if vids[3]:
-                try:
-                    await context.bot.send_video(chat_id=uid, video=vids[3], caption=f"🆓 *{vids[1]}* (Resolução Baixa)\n\n{vids[2]}", parse_mode='Markdown')
-                    return
-                except Exception:
-                    pass
-            if vids[4]:
-                try:
-                    await context.bot.send_video(chat_id=uid, video=vids[4], caption=f"🆓 *{vids[1]}* (Resolução Baixa)\n\n{vids[2]}\n\n📢 {ad}", parse_mode='Markdown')
-                    return
-                except Exception:
-                    pass
-            link = vids[5] or vids[6] or ''
-            if link:
-                await update.message.reply_text(f"🆓 *{vids[1]}* (Resolução Baixa)\n\n{vids[2]}\n\n📥 Download: {link}\n\n📢 {ad}\n\n💎 Assine VIP para HD sem propagandas!", parse_mode='Markdown')
+            sent = await send_video_compressed(context.bot, uid, v[0], v[1], v[2], v[3], v[4], v[5], v[6], False)
+            if sent:
                 return
         await update.message.reply_text(
             f"📂 Nenhum conteúdo grátis disponível ainda.\n\n"
@@ -728,6 +818,101 @@ async def listusers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"\n... e mais {len(users) - 50} usuários.")
     await update.message.reply_text("\n".join(lines))
 
+async def manage_files_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Comando admin para gerenciar arquivos de vídeo no servidor.
+    /manage_files list [dir] — lista arquivos de vídeo
+    /manage_files move <origem> <destino> — move arquivo
+    /manage_files copy <origem> <destino> — copia arquivo
+    /manage_files delete <arquivo> — deleta arquivo
+    /manage_files info <arquivo> — informações do arquivo
+    """
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("❌ Apenas admin.")
+        return
+
+    args = context.args
+    if not args:
+        await update.message.reply_text(
+            "📁 *Gerenciador de Arquivos*\n\n"
+            "`/manage_files list [dir]` — listar vídeos\n"
+            "`/manage_files move <src> <dst>` — mover\n"
+            "`/manage_files copy <src> <dst>` — copiar\n"
+            "`/manage_files delete <file>` — deletar\n"
+            "`/manage_files info <file>` — info do arquivo",
+            parse_mode='Markdown'
+        )
+        return
+
+    action = args[0].lower()
+    video_exts = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm')
+
+    if action == 'list':
+        search_dir = args[1] if len(args) > 1 else '.'
+        if not os.path.isdir(search_dir):
+            await update.message.reply_text(f"❌ Diretório não encontrado: {search_dir}")
+            return
+        files = [f for f in os.listdir(search_dir) if f.lower().endswith(video_exts)]
+        if not files:
+            await update.message.reply_text(f"📂 Nenhum vídeo encontrado em `{search_dir}`", parse_mode='Markdown')
+            return
+        file_list = '\n'.join(f"📹 `{f}` ({os.path.getsize(os.path.join(search_dir, f)) // (1024*1024)}MB)" for f in files[:30])
+        total = len(files)
+        await update.message.reply_text(f"📂 *Vídeos em* `{search_dir}` ({total} arquivos):\n\n{file_list}", parse_mode='Markdown')
+
+    elif action == 'move' and len(args) >= 3:
+        src, dst = args[1], args[2]
+        if not os.path.exists(src):
+            await update.message.reply_text(f"❌ Arquivo não encontrado: {src}")
+            return
+        try:
+            os.makedirs(os.path.dirname(dst) if os.path.dirname(dst) else '.', exist_ok=True)
+            shutil.move(src, dst)
+            await update.message.reply_text(f"✅ Movido:\n`{src}` → `{dst}`", parse_mode='Markdown')
+        except Exception as e:
+            await update.message.reply_text(f"❌ Erro ao mover: {e}")
+
+    elif action == 'copy' and len(args) >= 3:
+        src, dst = args[1], args[2]
+        if not os.path.exists(src):
+            await update.message.reply_text(f"❌ Arquivo não encontrado: {src}")
+            return
+        try:
+            os.makedirs(os.path.dirname(dst) if os.path.dirname(dst) else '.', exist_ok=True)
+            shutil.copy2(src, dst)
+            await update.message.reply_text(f"✅ Copiado:\n`{src}` → `{dst}`", parse_mode='Markdown')
+        except Exception as e:
+            await update.message.reply_text(f"❌ Erro ao copiar: {e}")
+
+    elif action == 'delete' and len(args) >= 2:
+        filepath = args[1]
+        if not os.path.exists(filepath):
+            await update.message.reply_text(f"❌ Arquivo não encontrado: {filepath}")
+            return
+        try:
+            os.remove(filepath)
+            await update.message.reply_text(f"🗑️ Deletado: `{filepath}`", parse_mode='Markdown')
+        except Exception as e:
+            await update.message.reply_text(f"❌ Erro ao deletar: {e}")
+
+    elif action == 'info' and len(args) >= 2:
+        filepath = args[1]
+        if not os.path.exists(filepath):
+            await update.message.reply_text(f"❌ Arquivo não encontrado: {filepath}")
+            return
+        size = os.path.getsize(filepath)
+        size_mb = size / (1024 * 1024)
+        ext = os.path.splitext(filepath)[1]
+        await update.message.reply_text(
+            f"📄 *Info do arquivo:*\n\n"
+            f"📝 Nome: `{os.path.basename(filepath)}`\n"
+            f"📦 Tamanho: `{size_mb:.1f} MB`\n"
+            f"📁 Caminho: `{os.path.abspath(filepath)}`\n"
+            f"🎬 Tipo: `{ext}`",
+            parse_mode='Markdown'
+        )
+    else:
+        await update.message.reply_text("❌ Uso incorreto. Use /manage_files sem argumentos para ver ajuda.")
+
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Quando o admin envia um vídeo, mostra o file_id."""
     if update.effective_user.id == ADMIN_ID:
@@ -779,6 +964,7 @@ def main():
     app.add_handler(CommandHandler("add_url", add_url_command))
     app.add_handler(CommandHandler("config", config_command))
     app.add_handler(CommandHandler("listusers", listusers_command))
+    app.add_handler(CommandHandler("manage_files", manage_files_command))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.VIDEO, handle_video))
     logger.info("🚀 Bot VIP da Pelada iniciado com sistema FREE + VIP!")

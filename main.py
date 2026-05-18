@@ -62,16 +62,20 @@ def init_db():
         description TEXT,
         file_id TEXT,
         file_id_low TEXT,
+        url TEXT,
+        url_low TEXT,
         price REAL DEFAULT 0,
         category TEXT,
         is_vip_content BOOLEAN DEFAULT FALSE)''')
-    # Adicionar coluna file_id_low se nao existir (migracao)
-    try:
-        cursor.execute('ALTER TABLE videos ADD COLUMN file_id_low TEXT')
-    except Exception:
-        pass
+    # Migracao: adicionar colunas novas se nao existirem
+    for col in ['file_id_low', 'url', 'url_low']:
+        try:
+            cursor.execute(f'ALTER TABLE videos ADD COLUMN {col} TEXT')
+        except Exception:
+            pass
     conn.commit()
     conn.close()
+    populate_default_catalog()
 
 def is_user_vip(user_id):
     user = db_query('SELECT is_vip, vip_expires FROM users WHERE user_id = ?', (user_id,), fetchone=True)
@@ -84,6 +88,13 @@ def is_user_vip(user_id):
             if expire_date > datetime.now(): return True
         except: pass
     return False
+
+def populate_default_catalog():
+    """Verifica se o catalogo esta vazio e loga instrucoes. Admin adiciona videos via /add_url ou /upload."""
+    count = db_query('SELECT COUNT(*) FROM videos', fetchone=True)
+    if count and count[0] > 0:
+        return
+    logger.info("Catalogo vazio. Use /add_url ou /upload para adicionar videos.")
 
 def get_ad_text():
     """Retorna o texto de propaganda configurado pelo admin."""
@@ -214,27 +225,41 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith('viewvip_'):
         vid_id = data[8:]
-        v = db_query('SELECT title, description, file_id FROM videos WHERE id = ?', (vid_id,), fetchone=True)
+        v = db_query('SELECT title, description, file_id, url FROM videos WHERE id = ?', (vid_id,), fetchone=True)
         if not is_user_vip(uid):
             await query.edit_message_caption("❌ *CONTEÚDO VIP BLOQUEADO*\n\nAssine VIP para HD sem propagandas! 💎", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💎 VIRAR VIP AGORA", callback_data='menu_vip')], [InlineKeyboardButton("🔙 VOLTAR", callback_data='menu_cats_vip')]]), parse_mode='Markdown')
             return
-        try:
-            await context.bot.send_video(chat_id=uid, video=v[2], caption=f"💎 *{v[0]}* (HD)\n\n{v[1]}", parse_mode='Markdown')
-        except Exception:
-            await context.bot.send_message(chat_id=uid, text="❌ Erro ao enviar vídeo.")
+        if v[2]:
+            try:
+                await context.bot.send_video(chat_id=uid, video=v[2], caption=f"💎 *{v[0]}* (HD)\n\n{v[1]}", parse_mode='Markdown')
+            except Exception:
+                await context.bot.send_message(chat_id=uid, text="❌ Erro ao enviar vídeo.")
+        elif v[3]:
+            await context.bot.send_message(chat_id=uid, text=f"💎 *{v[0]}* (HD)\n\n{v[1]}\n\n📥 Download HD: {v[3]}", parse_mode='Markdown')
+        else:
+            await context.bot.send_message(chat_id=uid, text="❌ Conteúdo indisponível.")
 
     elif data.startswith('viewfree_'):
         vid_id = data[9:]
-        v = db_query('SELECT title, description, file_id, file_id_low FROM videos WHERE id = ?', (vid_id,), fetchone=True)
+        v = db_query('SELECT title, description, file_id, file_id_low, url, url_low FROM videos WHERE id = ?', (vid_id,), fetchone=True)
         ad = get_ad_text()
-        # Enviar propaganda antes do conteudo
         await context.bot.send_message(chat_id=uid, text=f"📢 *PROPAGANDA:*\n\n{ad}\n\n💎 Assine VIP para remover propagandas!", parse_mode='Markdown')
-        video_to_send = v[3] if v[3] else v[2]  # Usar versao baixa se disponivel
-        try:
-            caption = f"🆓 *{v[0]}* (Resolução Baixa)\n\n{v[1]}\n\n📢 {ad}"
-            await context.bot.send_video(chat_id=uid, video=video_to_send, caption=caption, parse_mode='Markdown')
-        except Exception:
-            await context.bot.send_message(chat_id=uid, text="❌ Erro ao enviar vídeo.")
+        if v[3]:
+            try:
+                await context.bot.send_video(chat_id=uid, video=v[3], caption=f"🆓 *{v[0]}* (Resolução Baixa)\n\n{v[1]}\n\n📢 {ad}", parse_mode='Markdown')
+            except Exception:
+                await context.bot.send_message(chat_id=uid, text="❌ Erro ao enviar vídeo.")
+        elif v[2]:
+            try:
+                await context.bot.send_video(chat_id=uid, video=v[2], caption=f"🆓 *{v[0]}* (Resolução Baixa)\n\n{v[1]}\n\n📢 {ad}", parse_mode='Markdown')
+            except Exception:
+                await context.bot.send_message(chat_id=uid, text="❌ Erro ao enviar vídeo.")
+        elif v[5]:
+            await context.bot.send_message(chat_id=uid, text=f"🆓 *{v[0]}* (Resolução Baixa)\n\n{v[1]}\n\n📥 Download: {v[5]}\n\n📢 {ad}", parse_mode='Markdown')
+        elif v[4]:
+            await context.bot.send_message(chat_id=uid, text=f"🆓 *{v[0]}* (Resolução Baixa)\n\n{v[1]}\n\n📥 Download: {v[4]}\n\n📢 {ad}", parse_mode='Markdown')
+        else:
+            await context.bot.send_message(chat_id=uid, text="❌ Conteúdo indisponível.")
 
     elif data == 'menu_vip':
         txt = (
@@ -275,38 +300,48 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 🎲 CONTEÚDO ALEATÓRIO (VIP)
 # ==========================================
 
-SEXUAL_CONTENT_FREE = [
-    "🆓 Prévia 1 — Conteúdo de amostra (resolução baixa)",
-    "🆓 Prévia 2 — Conteúdo de amostra (resolução baixa)",
-    "🆓 Prévia 3 — Conteúdo de amostra (resolução baixa)"
-]
-
-SEXUAL_CONTENT_VIP = [
-    "💎 Conteúdo VIP 1 — Exclusivo HD",
-    "💎 Conteúdo VIP 2 — Exclusivo HD",
-    "💎 Conteúdo VIP 3 — Exclusivo HD",
-    "💎 Conteúdo VIP 4 — Exclusivo HD",
-    "💎 Conteúdo VIP 5 — Exclusivo HD",
-    "💎 Conteúdo VIP 6 — Exclusivo HD",
-    "💎 Conteúdo VIP 7 — Exclusivo HD",
-    "💎 Conteúdo VIP 8 — Exclusivo HD",
-    "💎 Conteúdo VIP 9 — Exclusivo HD",
-    "💎 Conteúdo VIP 10 — Exclusivo HD"
-]
-
 async def send_random_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    if is_user_vip(uid):
-        content = random.choice(SEXUAL_CONTENT_VIP)
-        await update.message.reply_text(f"{content}\n\n💎 Conteúdo exclusivo VIP em alta resolução!")
+    vip = is_user_vip(uid)
+
+    if vip:
+        vids = db_query('SELECT id, title, description, file_id, url FROM videos ORDER BY RANDOM() LIMIT 1', fetchone=True)
+        if vids:
+            if vids[3]:
+                try:
+                    await context.bot.send_video(chat_id=uid, video=vids[3], caption=f"💎 *{vids[1]}* (HD)\n\n{vids[2]}", parse_mode='Markdown')
+                    return
+                except Exception:
+                    pass
+            if vids[4]:
+                await update.message.reply_text(f"💎 *{vids[1]}* (HD)\n\n{vids[2]}\n\n📥 Download HD: {vids[4]}", parse_mode='Markdown')
+                return
+        await update.message.reply_text("💎 Catálogo VIP vazio. Admin: use /add_url ou /upload para adicionar conteúdo.")
     else:
-        content = random.choice(SEXUAL_CONTENT_FREE)
+        vids = db_query('SELECT id, title, description, file_id_low, file_id, url_low, url FROM videos WHERE is_vip_content = 0 ORDER BY RANDOM() LIMIT 1', fetchone=True)
         ad = get_ad_text()
+        if vids:
+            await update.message.reply_text(f"📢 *PROPAGANDA:* {ad}", parse_mode='Markdown')
+            if vids[3]:
+                try:
+                    await context.bot.send_video(chat_id=uid, video=vids[3], caption=f"🆓 *{vids[1]}* (Resolução Baixa)\n\n{vids[2]}", parse_mode='Markdown')
+                    return
+                except Exception:
+                    pass
+            if vids[4]:
+                try:
+                    await context.bot.send_video(chat_id=uid, video=vids[4], caption=f"🆓 *{vids[1]}* (Resolução Baixa)\n\n{vids[2]}\n\n📢 {ad}", parse_mode='Markdown')
+                    return
+                except Exception:
+                    pass
+            link = vids[5] or vids[6] or ''
+            if link:
+                await update.message.reply_text(f"🆓 *{vids[1]}* (Resolução Baixa)\n\n{vids[2]}\n\n📥 Download: {link}\n\n📢 {ad}\n\n💎 Assine VIP para HD sem propagandas!", parse_mode='Markdown')
+                return
         await update.message.reply_text(
-            f"{content}\n\n"
+            f"📂 Nenhum conteúdo grátis disponível ainda.\n\n"
             f"📢 *PROPAGANDA:* {ad}\n\n"
-            f"💎 Assine VIP para mais conteúdo em HD sem propagandas!\n"
-            f"Use /start para ver os planos.",
+            f"💎 Assine VIP para acesso completo!\nUse /start para ver os planos.",
             parse_mode='Markdown'
         )
 
@@ -522,6 +557,55 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Responda a um vídeo SD com: /upload_low {vid_id}"
     )
 
+async def add_url_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin: /add_url Titulo | Categoria | URL_HD | URL_SD | sim/nao (VIP)"""
+    if update.effective_user.id != ADMIN_ID: return
+    if not context.args:
+        await update.message.reply_text(
+            "📎 *Adicionar vídeo por URL:*\n\n"
+            "Formato:\n"
+            "/add_url Titulo | Categoria | URL_HD | URL_SD | sim/nao\n\n"
+            "Exemplo:\n"
+            "/add_url Ensaio Praia | modelo | https://url.com/hd.mp4 | https://url.com/sd.mp4 | sim\n\n"
+            "Se não tiver URL SD, coloque 'nao':\n"
+            "/add_url Ensaio | modelo | https://url.com/video.mp4 | nao | sim\n\n"
+            "Categorias sugeridas: modelo, danca, fitness, exclusivo, praia",
+            parse_mode='Markdown'
+        )
+        return
+
+    text = " ".join(context.args)
+    parts = [p.strip() for p in text.split("|")]
+    if len(parts) < 5:
+        await update.message.reply_text("❌ Formato incorreto. Use:\n/add_url Titulo | Categoria | URL_HD | URL_SD | sim/nao")
+        return
+
+    title = parts[0]
+    category = parts[1].lower()
+    url_hd = parts[2]
+    url_sd = parts[3] if parts[3].lower() not in ('nao', 'n', 'no', '') else None
+    is_vip = parts[4].lower() in ("sim", "s", "yes", "y", "1", "true")
+
+    db_query(
+        'INSERT INTO videos (title, description, url, url_low, category, is_vip_content) VALUES (?, ?, ?, ?, ?, ?)',
+        (title, "", url_hd, url_sd, category, is_vip)
+    )
+    vid = db_query('SELECT last_insert_rowid()', fetchone=True)
+    vid_id = vid[0] if vid else '?'
+    vip_label = "SIM" if is_vip else "NAO"
+    sd_label = url_sd if url_sd else "Não definida"
+    await update.message.reply_text(
+        f"✅ Vídeo adicionado por URL!\n\n"
+        f"🆔 ID: {vid_id}\n"
+        f"📌 Título: {title}\n"
+        f"📁 Categoria: {category}\n"
+        f"💎 VIP: {vip_label}\n"
+        f"🔗 URL HD: {url_hd}\n"
+        f"🔗 URL SD: {sd_label}\n\n"
+        f"💡 Grátis = URL SD + propagandas\n"
+        f"💎 VIP = URL HD sem propagandas"
+    )
+
 async def upload_low_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin: /upload_low <video_id> — responda a um video em baixa resolucao."""
     if update.effective_user.id != ADMIN_ID: return
@@ -563,7 +647,8 @@ async def config_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "  /config tmdb <api_key>\n\n"
             "📹 *Upload de Vídeos:*\n"
             "  /upload Titulo | Cat | Preco | sim/nao\n"
-            "  /upload_low <id_video> (versao SD)",
+            "  /upload_low <id_video> (versao SD)\n"
+            "  /add_url Titulo | Cat | URL_HD | URL_SD | sim/nao",
             parse_mode='Markdown'
         )
         return
@@ -691,6 +776,7 @@ def main():
     app.add_handler(CommandHandler("search_api", search_api))
     app.add_handler(CommandHandler("upload", upload_command))
     app.add_handler(CommandHandler("upload_low", upload_low_command))
+    app.add_handler(CommandHandler("add_url", add_url_command))
     app.add_handler(CommandHandler("config", config_command))
     app.add_handler(CommandHandler("listusers", listusers_command))
     app.add_handler(CallbackQueryHandler(callback_handler))

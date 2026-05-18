@@ -254,12 +254,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         txt = (
             f"🔥 Olá, {user.full_name}! Seja muito bem-vindo(a)! 🔥\n\n"
             f"Você é VIP! 💎 Acesso total em HD sem propagandas. 😈\n\n"
+            f"🎬 Vazados: Os Melhores Vídeos Adultos Inéditos e Clássicos\n"
+            f"Conteúdo exclusivo, raro e incomum. Acesso VIP completo!\n\n"
             f"Escolha uma das opções abaixo e aproveite!"
         )
     else:
         txt = (
             f"🔥 Olá, {user.full_name}! Seja muito bem-vindo(a)! 🔥\n\n"
-            f"Aqui você encontra os melhores conteúdos exclusivos. 😈\n"
+            f"🎬 Explorando o mundo dos vídeos adultos vazados.\n"
+            f"Encontre os melhores vídeos recentes e clássicos exclusivos! 😈\n\n"
             f"🆓 Conteúdo grátis disponível (resolução baixa + propagandas)\n"
             f"💎 Assine VIP para HD + mais conteúdo + sem propagandas!\n\n"
             f"Escolha uma das opções abaixo e aproveite!"

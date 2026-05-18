@@ -1,0 +1,33 @@
+# Data files
+users.json
+config.json
+payments.json
+video_links.json
+*.db
+users.db
+
+# Logs
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Videos (welcome_video.mp4 is tracked)
+# *.mp4

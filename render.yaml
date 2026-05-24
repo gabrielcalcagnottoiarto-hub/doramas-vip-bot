@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: doramaai-bot
+    runtime: docker
+    repo: https://github.com/SEU_USUARIO/DoramaAI-Bot  # <-- substituir pelo seu repo
+    plan: starter
+    region: oregon
+    branch: main
+    healthCheckPath: /api/healthz
+    envVars:
+      - key: PORT
+        value: "8080"
+      - key: NODE_ENV
+        value: production
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false  # configurar manualmente no dashboard
+      - key: FISH_AUDIO_API_KEY
+        sync: false
+      - key: DID_API_KEY
+        sync: false
+      - key: TELEGRAM_ADMIN_ID
+        sync: false
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: OPENPIX_API_KEY
+        sync: false
+      - key: PIX_KEY
+        sync: false
+      - key: TONCOIN_ADDRESS
+        sync: false
+      - key: VIP_PRICE_BRL
+        value: "29.90"

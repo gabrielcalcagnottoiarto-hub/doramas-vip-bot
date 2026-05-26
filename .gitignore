@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.db
+*.sqlite3
+.env
+*.log
+videos/
+*.mp4
+config.json
+payments.json
+users.json
+video_links.json
+.venv/
+venv/

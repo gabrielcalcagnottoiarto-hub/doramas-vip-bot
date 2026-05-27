@@ -26,6 +26,15 @@ from ai_generator import (
     formatar_novela_telegram,
     formatar_episodio_telegram,
 )
+from media_generator import (
+    gerar_audio_episodio,
+    gerar_imagem_cena_novela,
+    gerar_capa_novela,
+    gerar_video_cena_novela,
+    gerar_midia_episodio,
+    gerar_url_imagem,
+    PIKA_API_KEY,
+)
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -1481,6 +1490,16 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await gerar_episodio_handler(update, context)
     elif data.startswith("gerar_serie_"):
         await gerar_serie_handler(update, context)
+    elif data == "gerar_midia_menu":
+        await gerar_midia_menu_handler(update, context)
+    elif data.startswith("midia_") and data != "midia_episodio_completo":
+        await midia_cena_handler(update, context)
+    elif data == "midia_episodio_completo":
+        await midia_episodio_completo_handler(update, context)
+    elif data.startswith("midia_ep_next_"):
+        ep_num = int(data.replace("midia_ep_next_", ""))
+        context.user_data["_next_ep"] = ep_num
+        await midia_episodio_completo_handler(update, context)
 
 
 # ─────────────────────────────────────────────
@@ -1501,6 +1520,7 @@ async def gerar_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         [InlineKeyboardButton("🇲🇽 Gerar Novela Mexicana", callback_data="gerar_novela_mexicana")],
         [InlineKeyboardButton("🎲 Novela Aleatória", callback_data="gerar_novela_random")],
         [InlineKeyboardButton("📺 Gerar Mini-Série (5 eps)", callback_data="gerar_serie_random")],
+        [InlineKeyboardButton("🎬 Gerar Cena com Áudio + Imagem", callback_data="gerar_midia_menu")],
         [InlineKeyboardButton("🔙 Voltar", callback_data="voltar_inicio")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1658,6 +1678,226 @@ async def gerar_serie_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.edit_message_text(
             text=texto, reply_markup=reply_markup, parse_mode=ParseMode.HTML
         )
+
+
+# ─────────────────────────────────────────────
+# MÍDIA - ÁUDIO, IMAGEM E VÍDEO
+# ─────────────────────────────────────────────
+async def gerar_midia_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    video_status = "✅ Ativo" if PIKA_API_KEY else "⚠️ Requer PIKA_API_KEY"
+
+    text = (
+        "🎬 <b>Gerador de Mídia por IA</b>\n\n"
+        "Gere cenas completas com áudio, imagem e vídeo!\n\n"
+        "📢 <b>Áudio (Narração):</b> ✅ Grátis\n"
+        "🖼️ <b>Imagens (Cenas):</b> ✅ Grátis\n"
+        f"🎥 <b>Vídeos (Pessoas):</b> {video_status}\n\n"
+        "Escolha a categoria da cena:\n"
+    )
+
+    keyboard = [
+        [InlineKeyboardButton("🇹🇷 Cena Turca Romântica", callback_data="midia_turca_romantica")],
+        [InlineKeyboardButton("🇹🇷 Cena Turca Drama", callback_data="midia_turca_drama")],
+        [InlineKeyboardButton("🇲🇽 Cena Mexicana Romântica", callback_data="midia_mexicana_romantica")],
+        [InlineKeyboardButton("🇲🇽 Cena Mexicana Drama", callback_data="midia_mexicana_drama")],
+        [InlineKeyboardButton("🎭 Gerar Episódio Completo + Mídia", callback_data="midia_episodio_completo")],
+        [InlineKeyboardButton("🔙 Voltar", callback_data="gerar_menu")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    try:
+        await query.edit_message_caption(
+            caption=text, reply_markup=reply_markup, parse_mode=ParseMode.HTML
+        )
+    except Exception:
+        await query.edit_message_text(
+            text=text, reply_markup=reply_markup, parse_mode=ParseMode.HTML
+        )
+
+
+async def midia_cena_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer("🎬 Gerando cena com mídia... aguarde!")
+
+    # Parse callback: midia_turca_romantica
+    parts = query.data.replace("midia_", "").split("_")
+    categoria = parts[0]
+    tipo_cena = parts[1] if len(parts) > 1 else "romantica"
+
+    # Generate image
+    imagem_url = gerar_imagem_cena_novela(categoria, tipo_cena)
+
+    # Generate a short narration text
+    from ai_generator import gerar_novela as _gerar_novela, gerar_episodio as _gerar_episodio
+    novela = _gerar_novela(categoria)
+    episodio = _gerar_episodio(novela, 1)
+
+    if context.user_data is not None:
+        context.user_data["last_novela"] = novela
+
+    # Generate audio
+    audio_path = await gerar_audio_episodio(
+        novela.titulo, 1, episodio.sinopse, episodio.dialogo
+    )
+
+    # Send image
+    cat_emoji = "🇹🇷" if categoria == "turca" else "🇲🇽"
+    texto = (
+        f"{cat_emoji} <b>{novela.titulo}</b>\n"
+        f"🎬 Cena: {tipo_cena.capitalize()}\n\n"
+        f"📖 {episodio.sinopse}\n\n"
+        f"🗣️ {episodio.dialogo}\n"
+    )
+
+    if episodio.cliffhanger:
+        texto += f"\n⚡ <i>{episodio.cliffhanger}</i>\n"
+
+    # Add points
+    add_points(query.from_user.id, 8, "gerou cena com mídia")
+    texto += "\n💰 +8 pontos!"
+
+    keyboard = [
+        [InlineKeyboardButton("🔄 Gerar Outra Cena", callback_data=f"midia_{categoria}_{tipo_cena}")],
+        [InlineKeyboardButton("🎬 Menu Mídia", callback_data="gerar_midia_menu")],
+        [InlineKeyboardButton("🏠 Menu Principal", callback_data="voltar_inicio")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    try:
+        # Send photo with caption
+        await context.bot.send_photo(
+            chat_id=query.message.chat_id,
+            photo=imagem_url,
+            caption=texto,
+            reply_markup=reply_markup,
+            parse_mode=ParseMode.HTML,
+        )
+
+        # Send audio narration
+        if audio_path:
+            with open(audio_path, "rb") as audio_file:
+                await context.bot.send_audio(
+                    chat_id=query.message.chat_id,
+                    audio=audio_file,
+                    title=f"{novela.titulo} - Ep. 1",
+                    performer="Novelas Play IA",
+                )
+
+        # If Pika API available, generate and send video
+        if PIKA_API_KEY:
+            video_url = await gerar_video_cena_novela(categoria, tipo_cena)
+            if video_url:
+                await context.bot.send_video(
+                    chat_id=query.message.chat_id,
+                    video=video_url,
+                    caption=f"🎥 Vídeo gerado por IA — {novela.titulo}",
+                )
+
+    except Exception as e:
+        logger.error(f"Erro ao enviar mídia: {e}")
+        try:
+            await query.edit_message_text(
+                text=texto, reply_markup=reply_markup, parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            pass
+
+
+async def midia_episodio_completo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer("🎬 Gerando episódio completo com mídia... aguarde!")
+
+    # Get or generate novela
+    novela = None
+    if context.user_data:
+        novela = context.user_data.get("last_novela")
+
+    if not novela:
+        novela = gerar_novela()
+        if context.user_data is not None:
+            context.user_data["last_novela"] = novela
+
+    episodio = gerar_episodio(novela, 1)
+
+    # Generate all media
+    midia = await gerar_midia_episodio(
+        novela.titulo, novela.categoria, 1,
+        episodio.sinopse, episodio.dialogo
+    )
+
+    # Format episode text
+    texto = formatar_episodio_telegram(episodio, novela.titulo)
+
+    # Add points
+    add_points(query.from_user.id, 15, "gerou episódio completo com mídia")
+    texto += "\n\n💰 +15 pontos!"
+
+    keyboard = [
+        [InlineKeyboardButton("📺 Gerar Ep. 2 com Mídia", callback_data="midia_ep_next_2")],
+        [InlineKeyboardButton("🎬 Menu Mídia", callback_data="gerar_midia_menu")],
+        [InlineKeyboardButton("🏠 Menu Principal", callback_data="voltar_inicio")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    try:
+        # Send cover image
+        if midia["capa"]:
+            await context.bot.send_photo(
+                chat_id=query.message.chat_id,
+                photo=midia["capa"],
+                caption=f"🎬 <b>{novela.titulo}</b> — Capa",
+                parse_mode=ParseMode.HTML,
+            )
+
+        # Send scene image with episode text
+        if midia["imagem"]:
+            await context.bot.send_photo(
+                chat_id=query.message.chat_id,
+                photo=midia["imagem"],
+                caption=texto,
+                reply_markup=reply_markup,
+                parse_mode=ParseMode.HTML,
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text=texto,
+                reply_markup=reply_markup,
+                parse_mode=ParseMode.HTML,
+            )
+
+        # Send audio narration
+        if midia["audio"]:
+            with open(midia["audio"], "rb") as audio_file:
+                await context.bot.send_audio(
+                    chat_id=query.message.chat_id,
+                    audio=audio_file,
+                    title=f"{novela.titulo} - Ep. 1",
+                    performer="Novelas Play IA",
+                )
+
+        # Send video if available
+        if midia["video"]:
+            await context.bot.send_video(
+                chat_id=query.message.chat_id,
+                video=midia["video"],
+                caption=f"🎥 Cena gerada por IA — {novela.titulo}",
+            )
+
+    except Exception as e:
+        logger.error(f"Erro ao enviar episódio completo: {e}")
+        try:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text=texto,
+                reply_markup=reply_markup,
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception:
+            pass
 
 
 # ─────────────────────────────────────────────

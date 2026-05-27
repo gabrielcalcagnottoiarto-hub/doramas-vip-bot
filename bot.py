@@ -17,6 +17,16 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode
 
+from ai_generator import (
+    gerar_novela,
+    gerar_episodio,
+    gerar_mini_serie,
+    gerar_prompt_imagem,
+    gerar_com_openai,
+    formatar_novela_telegram,
+    formatar_episodio_telegram,
+)
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
@@ -522,6 +532,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("💰 Meus Pontos", callback_data="pontos"),
             InlineKeyboardButton("🎁 Recompensas", callback_data="recompensas"),
         ],
+        [InlineKeyboardButton("🤖 Gerar Novela por IA", callback_data="gerar_menu")],
         [
             InlineKeyboardButton("⭐ VIP", callback_data="vip_info"),
             InlineKeyboardButton("👤 Perfil", callback_data="perfil"),
@@ -1462,6 +1473,191 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await buscar_handler(update, context)
     elif data == "voltar_inicio":
         await voltar_inicio(update, context)
+    elif data == "gerar_menu":
+        await gerar_menu_handler(update, context)
+    elif data.startswith("gerar_novela_"):
+        await gerar_novela_handler(update, context)
+    elif data.startswith("gerar_ep_"):
+        await gerar_episodio_handler(update, context)
+    elif data.startswith("gerar_serie_"):
+        await gerar_serie_handler(update, context)
+
+
+# ─────────────────────────────────────────────
+# GERAÇÃO POR IA
+# ─────────────────────────────────────────────
+async def gerar_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    text = (
+        "🤖 <b>Gerador de Novelas por IA</b>\n\n"
+        "Crie novelas originais com enredo, personagens e episódios!\n\n"
+        "Escolha o que deseja gerar:\n"
+    )
+
+    keyboard = [
+        [InlineKeyboardButton("🇹🇷 Gerar Novela Turca", callback_data="gerar_novela_turca")],
+        [InlineKeyboardButton("🇲🇽 Gerar Novela Mexicana", callback_data="gerar_novela_mexicana")],
+        [InlineKeyboardButton("🎲 Novela Aleatória", callback_data="gerar_novela_random")],
+        [InlineKeyboardButton("📺 Gerar Mini-Série (5 eps)", callback_data="gerar_serie_random")],
+        [InlineKeyboardButton("🔙 Voltar", callback_data="voltar_inicio")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    try:
+        await query.edit_message_caption(
+            caption=text, reply_markup=reply_markup, parse_mode=ParseMode.HTML
+        )
+    except Exception:
+        await query.edit_message_text(
+            text=text, reply_markup=reply_markup, parse_mode=ParseMode.HTML
+        )
+
+
+async def gerar_novela_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer("🤖 Gerando novela... aguarde!")
+
+    cat = query.data.replace("gerar_novela_", "")
+    if cat == "random":
+        categoria = None
+    else:
+        categoria = cat
+
+    novela = gerar_novela(categoria)
+    texto = formatar_novela_telegram(novela)
+
+    # Store generated novela in user_data for episode generation
+    if context.user_data is not None:
+        context.user_data["last_novela"] = novela
+
+    # Add points for generating
+    user_data = ensure_user(query.from_user.id)
+    add_points(query.from_user.id, 5, "gerou novela por IA")
+
+    texto += (
+        f"\n\n💰 +5 pontos por gerar conteúdo!\n"
+    )
+
+    keyboard = [
+        [InlineKeyboardButton("📺 Gerar Episódio 1", callback_data="gerar_ep_1")],
+        [InlineKeyboardButton("📺 Gerar Mini-Série", callback_data="gerar_serie_last")],
+        [InlineKeyboardButton("🔄 Gerar Outra Novela", callback_data=f"gerar_novela_{cat}")],
+        [InlineKeyboardButton("🤖 Menu IA", callback_data="gerar_menu")],
+        [InlineKeyboardButton("🏠 Menu Principal", callback_data="voltar_inicio")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    try:
+        await query.edit_message_caption(
+            caption=texto, reply_markup=reply_markup, parse_mode=ParseMode.HTML
+        )
+    except Exception:
+        await query.edit_message_text(
+            text=texto, reply_markup=reply_markup, parse_mode=ParseMode.HTML
+        )
+
+
+async def gerar_episodio_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer("🤖 Gerando episódio...")
+
+    ep_num = int(query.data.replace("gerar_ep_", ""))
+
+    novela = None
+    if context.user_data:
+        novela = context.user_data.get("last_novela")
+
+    if not novela:
+        novela = gerar_novela()
+        if context.user_data is not None:
+            context.user_data["last_novela"] = novela
+
+    episodio = gerar_episodio(novela, ep_num)
+    texto = formatar_episodio_telegram(episodio, novela.titulo)
+
+    # Add points
+    add_points(query.from_user.id, 3, "gerou episódio por IA")
+    texto += f"\n💰 +3 pontos!"
+
+    keyboard = []
+    if ep_num < novela.total_episodios:
+        keyboard.append(
+            [InlineKeyboardButton(f"▶️ Gerar Episódio {ep_num + 1}", callback_data=f"gerar_ep_{ep_num + 1}")]
+        )
+    if ep_num > 1:
+        keyboard.append(
+            [InlineKeyboardButton(f"⏪ Episódio {ep_num - 1}", callback_data=f"gerar_ep_{ep_num - 1}")]
+        )
+
+    keyboard.append([InlineKeyboardButton("🤖 Menu IA", callback_data="gerar_menu")])
+    keyboard.append([InlineKeyboardButton("🏠 Menu Principal", callback_data="voltar_inicio")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    try:
+        await query.edit_message_caption(
+            caption=texto, reply_markup=reply_markup, parse_mode=ParseMode.HTML
+        )
+    except Exception:
+        await query.edit_message_text(
+            text=texto, reply_markup=reply_markup, parse_mode=ParseMode.HTML
+        )
+
+
+async def gerar_serie_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer("🤖 Gerando mini-série... aguarde!")
+
+    cat_data = query.data.replace("gerar_serie_", "")
+
+    if cat_data == "last" and context.user_data and context.user_data.get("last_novela"):
+        novela = context.user_data["last_novela"]
+        episodios = []
+        pontos_chave = [1, int(novela.total_episodios * 0.3),
+                        int(novela.total_episodios * 0.5),
+                        int(novela.total_episodios * 0.8),
+                        novela.total_episodios]
+        for ep_num in pontos_chave:
+            episodios.append(gerar_episodio(novela, ep_num))
+    else:
+        categoria = None if cat_data == "random" else cat_data
+        novela, episodios = gerar_mini_serie(categoria)
+        if context.user_data is not None:
+            context.user_data["last_novela"] = novela
+
+    # Format output
+    texto = formatar_novela_telegram(novela)
+    texto += "\n\n📺 <b>PRÉVIA — 5 Episódios Chave:</b>\n"
+
+    for ep in episodios:
+        texto += f"\n🎬 <b>Ep. {ep.numero}: {ep.titulo}</b>\n"
+        texto += f"<i>{ep.sinopse[:150]}...</i>\n"
+
+    # Telegram message limit is 4096 chars
+    if len(texto) > 4000:
+        texto = texto[:3990] + "\n\n...(continua)"
+
+    # Add points
+    add_points(query.from_user.id, 10, "gerou mini-série por IA")
+    texto += f"\n\n💰 +10 pontos!"
+
+    keyboard = [
+        [InlineKeyboardButton("📺 Ver Episódio 1 Completo", callback_data="gerar_ep_1")],
+        [InlineKeyboardButton("🔄 Gerar Outra Série", callback_data="gerar_serie_random")],
+        [InlineKeyboardButton("🤖 Menu IA", callback_data="gerar_menu")],
+        [InlineKeyboardButton("🏠 Menu Principal", callback_data="voltar_inicio")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    try:
+        await query.edit_message_caption(
+            caption=texto, reply_markup=reply_markup, parse_mode=ParseMode.HTML
+        )
+    except Exception:
+        await query.edit_message_text(
+            text=texto, reply_markup=reply_markup, parse_mode=ParseMode.HTML
+        )
 
 
 # ─────────────────────────────────────────────
@@ -1482,6 +1678,7 @@ def main():
     app.add_handler(CommandHandler("stats", admin_stats))
     app.add_handler(CommandHandler("broadcast", admin_broadcast))
     app.add_handler(CommandHandler("solicitar", solicitar_handler))
+    app.add_handler(CommandHandler("gerar", gerar_command))
 
     # Callbacks
     app.add_handler(CallbackQueryHandler(callback_router))
@@ -1491,6 +1688,25 @@ def main():
 
     logger.info("🎬 Novelas Play Bot iniciado!")
     app.run_polling(drop_pending_updates=True)
+
+
+async def gerar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Command /gerar - Generate AI novela content."""
+    keyboard = [
+        [InlineKeyboardButton("🇹🇷 Gerar Novela Turca", callback_data="gerar_novela_turca")],
+        [InlineKeyboardButton("🇲🇽 Gerar Novela Mexicana", callback_data="gerar_novela_mexicana")],
+        [InlineKeyboardButton("🎲 Novela Aleatória", callback_data="gerar_novela_random")],
+        [InlineKeyboardButton("📺 Gerar Mini-Série", callback_data="gerar_serie_random")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text(
+        "🤖 <b>Gerador de Novelas por IA</b>\n\n"
+        "Crie novelas originais com enredo, personagens e episódios!\n"
+        "Escolha o que deseja gerar:",
+        reply_markup=reply_markup,
+        parse_mode=ParseMode.HTML,
+    )
 
 
 if __name__ == "__main__":
